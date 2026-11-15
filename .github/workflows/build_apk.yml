@@ -1,0 +1,87 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: कोड डाउनलोड
+        uses: actions/checkout@v4
+
+      - name: Java लगाना
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Flutter लगाना
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Android फ़ोल्डर बनाना
+        run: |
+          mkdir -p /tmp/keep
+          cp -r lib /tmp/keep/lib
+          cp pubspec.yaml /tmp/keep/pubspec.yaml
+          flutter create --platforms=android --org com.mohit --project-name shiv_darshan .
+          rm -rf lib pubspec.yaml test
+          cp -r /tmp/keep/lib lib
+          cp /tmp/keep/pubspec.yaml pubspec.yaml
+          sed -i 's/android:label="[^"]*"/android:label="शिवार्पण"/' android/app/src/main/AndroidManifest.xml
+
+      - name: इंटरनेट की अनुमति जोड़ना
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' $M
+          sed -i 's#<queries>#<queries>\n        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="https"/></intent>#' $M
+          grep -q "android.permission.INTERNET" $M
+
+      - name: ऐप आइकन (त्रिशूल) लगाना
+        run: |
+          rm -rf android/app/src/main/res/mipmap-anydpi*
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p android/app/src/main/res/mipmap-$d
+            cp icons/mipmap-$d/ic_launcher.png android/app/src/main/res/mipmap-$d/ic_launcher.png
+          done
+
+      - name: Packages लाना
+        run: flutter pub get
+
+      - name: कोड जाँच (analyze)
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 | tee analyze.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            grep -E "error •|Error" analyze.log | head -30 > err.txt
+            [ -s err.txt ] || tail -30 analyze.log > err.txt
+            msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g' err.txt)
+            echo "::error title=कोड-में-गलती::$msg"
+            exit "$code"
+          fi
+
+      - name: APK बनाना
+        run: |
+          set +e
+          flutter build apk --release --dart-define=YOUTUBE_API_KEY="${{ secrets.YOUTUBE_API_KEY }}" 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            grep -E "\.dart:[0-9]+:[0-9]+: Error" build.log | head -20 > err.txt
+            [ -s err.txt ] || sed -n '/What went wrong/,/\* Try/p' build.log | head -40 > err.txt
+            [ -s err.txt ] || tail -30 build.log > err.txt
+            msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g' err.txt)
+            echo "::error title=असली-एरर::$msg"
+            exit "$code"
+          fi
+
+      - name: APK सेव करना
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-darshan-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
